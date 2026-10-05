@@ -113,6 +113,12 @@ async def main() -> None:
         raise SystemExit("Задай переменную окружения BOT_TOKEN")
     bot = Bot(token=config.bot_token)
     storage.bootstrap_owner(config.owner_id)
+    grant_available = bool(storage.one_time_admin_state()[0])
+    logging.info(
+        "админов в базе: %s, разовая /addoneadm: %s",
+        len(storage.admin_ids()),
+        "доступна" if grant_available else "использована",
+    )
     me = await bot.get_me()
     logging.info("бот запущен: @%s", me.username)
     await dp.start_polling(bot)

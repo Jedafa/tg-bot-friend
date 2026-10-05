@@ -1,5 +1,6 @@
 """Админ-панель: сервер (/utcp) и управление админами с шифрованным хранением ID."""
 import asyncio
+import logging
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -9,6 +10,7 @@ import friend
 import keyboards
 import storage
 
+log = logging.getLogger(__name__)
 router = Router(name="admin")
 awaiting_admin_id: set = set()
 
@@ -28,10 +30,27 @@ def guard(callback: CallbackQuery) -> bool:
 
 
 async def send_server_report(message: Message) -> None:
-    placeholder = await message.answer("⏳ Собираю статистику и поднимаю терминал...")
-    report = await asyncio.to_thread(friend.system_report)
-    terminal = await asyncio.to_thread(friend.terminal_session)
-    await placeholder.edit_text(report + "\n\n" + terminal)
+    placeholder = await message.answer("⏳ Собираю статистику сервера...")
+    report = "🖥 Статистика недоступна, смотри логи хостинга"
+    try:
+        report = await asyncio.to_thread(friend.system_report)
+        await placeholder.edit_text(report + "\n\n⏳ Поднимаю sshx (качаю в /data, это до минуты)...")
+        sshx_text, sshx_note = await asyncio.to_thread(friend.sshx_terminal)
+        if sshx_text:
+            await placeholder.edit_text(report + "\n\n" + sshx_text)
+            return
+        await placeholder.edit_text(report + f"\n\n⏳ sshx не вышел ({sshx_note}), пробую tmate...")
+        tmate_text, tmate_note = await asyncio.to_thread(friend.tmate_terminal)
+        if tmate_text:
+            await placeholder.edit_text(report + "\n\n" + tmate_text)
+            return
+        notes = "\n".join(f"• {tool}: {note}" for tool, note in (("sshx", sshx_note), ("tmate", tmate_note)) if note)
+        await placeholder.edit_text(
+            report + "\n\n🌐 Терминал поднять не удалось\n" + notes + "\n\n" + friend.terminal_manual_hint
+        )
+    except Exception as error:
+        log.exception("utcp упал")
+        await placeholder.edit_text(report + f"\n\n⚠️ Сбор данных упал с ошибкой: {error}")
 
 
 @router.callback_query(F.data == "menu:admin")

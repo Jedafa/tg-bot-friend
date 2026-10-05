@@ -4,8 +4,9 @@
 порт 443) → системный tmate → статический tmate (GitHub). Всё скачивается в
 папку данных (на botdepo это /data) и запускается оттуда — установка в систему
 и root не нужны: файловая система хостинга вне /data только для чтения.
-Каждая неудача попадает в диагностику для админа.
+Каждый шаг пишется в лог, неудачи возвращаются админу текстом.
 """
+import logging
 import os
 import platform
 import shutil
@@ -16,6 +17,8 @@ import urllib.parse
 import urllib.request
 
 import storage
+
+log = logging.getLogger(__name__)
 
 sshx_binary_url = "https://s3.amazonaws.com/sshx/sshx-{arch}-unknown-linux-musl.tar.gz"
 tmate_static_url = "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-{arch}.tar.xz"
@@ -106,33 +109,40 @@ def system_report() -> str:
     return "\n".join(lines)
 
 
-def terminal_session() -> str:
-    notes = []
-    sshx_path, reason = _ensure_sshx()
-    if sshx_path:
-        link, reason = _sshx_link(sshx_path)
-        if link:
-            return "🔐 Удалённый терминал (sshx):\n" + link
-    if reason:
-        notes.append("sshx: " + reason)
-    tmate_path, reason = _ensure_tmate()
-    if tmate_path:
-        link, reason = _tmate_link(tmate_path)
-        if link:
-            return "🔐 Удалённый терминал (tmate):\n" + link
-    if reason:
-        notes.append("tmate: " + reason)
-    body = "\n".join("• " + note for note in notes)
-    return "🌐 Удалённый терминал\n\n" + (body + "\n\n" if body else "") + terminal_manual_hint
+def sshx_terminal() -> tuple:
+    path, reason = _ensure_sshx()
+    if not path:
+        log.warning("sshx: %s", reason)
+        return "", reason
+    link, reason = _sshx_link(path)
+    if link:
+        return "🔐 Удалённый терминал (sshx):\n" + link, ""
+    log.warning("sshx: %s", reason)
+    return "", reason
+
+
+def tmate_terminal() -> tuple:
+    path, reason = _ensure_tmate()
+    if not path:
+        log.warning("tmate: %s", reason)
+        return "", reason
+    link, reason = _tmate_link(path)
+    if link:
+        return "🔐 Удалённый терминал (tmate):\n" + link, ""
+    log.warning("tmate: %s", reason)
+    return "", reason
 
 
 def _download(url: str, target) -> bool:
+    log.info("качаю %s", url)
     try:
         request = urllib.request.Request(url, headers={"User-Agent": "tg-bot-friend"})
-        with urllib.request.urlopen(request, timeout=30) as response, open(target, "wb") as output:
+        with urllib.request.urlopen(request, timeout=20) as response, open(target, "wb") as output:
             output.write(response.read())
+        log.info("скачалось: %s", target)
         return True
-    except OSError:
+    except OSError as error:
+        log.warning("не скачалось %s: %s", url, error)
         return False
 
 
@@ -140,7 +150,8 @@ def _extract(archive_path, destination, name: str) -> str:
     try:
         with tarfile.open(archive_path) as archive:
             archive.extractall(destination)
-    except (OSError, tarfile.TarError):
+    except (OSError, tarfile.TarError) as error:
+        log.warning("не распаковалось %s: %s", archive_path, error)
         return ""
     for candidate in sorted(destination.rglob(name)):
         if candidate.is_file():
@@ -158,6 +169,7 @@ def _fetch_binary(url: str, name: str, archive_name: str) -> tuple:
     binary = _extract(archive_path, bin_dir, name)
     if not binary:
         return "", "скачался, но не распаковался"
+    log.info("бинарник %s готов: %s", name, binary)
     return binary, ""
 
 
@@ -196,6 +208,7 @@ def _tmate_link(binary: str) -> tuple:
         return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
     except subprocess.TimeoutExpired:
         return "", "сессия не стартовала"
+    log.info("tmate сессия запущена, жду ссылку от tmate.io")
     for _ in range(40):
         time.sleep(0.5)
         ssh_line = _tmate_format(binary, "#{tmate_ssh}")
@@ -219,6 +232,7 @@ def _sshx_link(binary: str) -> tuple:
         )
     except OSError:
         return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
+    log.info("sshx запущен, жду ссылку от sshx.io")
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         line = process.stdout.readline()
