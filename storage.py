@@ -29,6 +29,11 @@ _db.execute(
     "used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
 )
 _db.execute("INSERT OR IGNORE INTO one_time_admin (id) VALUES (1)")
+_db.execute(
+    "CREATE TABLE IF NOT EXISTS ai_settings ("
+    "name TEXT PRIMARY KEY, "
+    "secret TEXT NOT NULL)"
+)
 _db.commit()
 
 
@@ -105,6 +110,21 @@ def claim_one_time_admin(chat_id: int) -> bool:
 def rearm_one_time_admin() -> None:
     _db.execute("UPDATE one_time_admin SET available = 1 WHERE id = 1")
     _db.commit()
+
+
+def set_ai_setting(name: str, value: str) -> None:
+    _db.execute("INSERT OR REPLACE INTO ai_settings (name, secret) VALUES (?, ?)", (name, crypto.encrypt_text(value)))
+    _db.commit()
+
+
+def ai_settings() -> dict:
+    values = {"api_key": "", "model": "", "url": "", "prompt": ""}
+    for name, secret in _db.execute("SELECT name, secret FROM ai_settings").fetchall():
+        try:
+            values[name] = crypto.decrypt_text(secret)
+        except (ValueError, KeyError, UnicodeDecodeError):
+            continue
+    return values
 
 
 def bootstrap_owner(owner_id: int) -> None:

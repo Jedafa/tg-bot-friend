@@ -35,12 +35,29 @@ terminal_manual_hint = (
 )
 
 
-def _run(command: str, timeout: int = 180) -> tuple:
+def _run(command: str, timeout: int = 180, cwd: str = "") -> tuple:
     try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd or None)
         return result.returncode == 0, (result.stdout + result.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
         return False, ""
+
+
+def run_shell(command: str, timeout: int = 60) -> tuple:
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(storage.data_dir),
+        )
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return False, f"команда не уложилась в {timeout} секунд"
+    except OSError as error:
+        return False, str(error)
 
 
 def _cpu_fields() -> list:

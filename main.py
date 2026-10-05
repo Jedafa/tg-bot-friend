@@ -12,6 +12,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, Message
 
 import admin
+import ai
 import chat
 import config
 import keyboards
@@ -23,7 +24,7 @@ fallback = Router(name="fallback")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 dp = Dispatcher()
-dp.include_routers(admin.router, chat.router, fallback)
+dp.include_routers(admin.router, chat.router, ai.router, fallback)
 
 
 @dp.message(CommandStart())
@@ -31,6 +32,7 @@ async def start(message: Message) -> None:
     user = message.from_user
     storage.register_user(user.id, user.username or "", user.full_name)
     chat.leave(user.id)
+    ai.leave(user.id)
     admin.drop_pending(user.id)
     await message.answer(
         "👋 Привет! Это tg-bot-friend — курсы крипты, чат между пользователями и серверное хозяйство.\n\nВыбери раздел:",
@@ -104,6 +106,8 @@ async def dispatch_text(message: Message, bot: Bot) -> None:
             )
             return
         await chat.relay(bot, message)
+        return
+    if await ai.handle_input(message, bot):
         return
     await message.answer("🤔 Не понял сообщение. Открой меню: /start", reply_markup=keyboards.back_to_main())
 

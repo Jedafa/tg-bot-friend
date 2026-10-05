@@ -66,8 +66,20 @@ def admin_menu() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [button("🖥 Сервер (/utcp)", "adm:utcp")],
             [button("👮 Админы", "adm:list"), button("➕ Добавить", "adm:add")],
+            [button("🤖 ИИ", "adm:ai")],
             [button("♻️ Перевыпустить /addoneadm", "adm:rearm")],
             [button("◀️ В меню", "nav:main")],
+        ]
+    )
+
+
+def ai_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button("🔑 API-ключ", "ai:set:key"), button("🧠 Модель", "ai:set:model")],
+            [button("🌐 Base URL", "ai:set:url"), button("📜 Промт", "ai:set:prompt")],
+            [button("💬 Управлять сервером", "ai:chat")],
+            [button("◀️ Назад", "menu:admin")],
         ]
     )
 
