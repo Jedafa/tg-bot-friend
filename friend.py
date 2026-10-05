@@ -9,6 +9,7 @@
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import tarfile
@@ -19,6 +20,7 @@ import urllib.request
 import storage
 
 log = logging.getLogger(__name__)
+ansi_pattern = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 sshx_binary_url = "https://s3.amazonaws.com/sshx/sshx-{arch}-unknown-linux-musl.tar.gz"
 tmate_static_url = "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-{arch}.tar.xz"
@@ -116,7 +118,7 @@ def sshx_terminal() -> tuple:
         return "", reason
     link, reason = _sshx_link(path)
     if link:
-        return "🔐 Удалённый терминал (sshx):\n" + link, ""
+        return "🔐 Удалённый терминал (sshx):\n" + link + _environment_note(), ""
     log.warning("sshx: %s", reason)
     return "", reason
 
@@ -128,9 +130,15 @@ def tmate_terminal() -> tuple:
         return "", reason
     link, reason = _tmate_link(path)
     if link:
-        return "🔐 Удалённый терминал (tmate):\n" + link, ""
+        return "🔐 Удалённый терминал (tmate):\n" + link + _environment_note(), ""
     log.warning("tmate: %s", reason)
     return "", reason
+
+
+def _environment_note() -> str:
+    if os.access("/", os.W_OK):
+        return ""
+    return "\n\n⚠️ Шелл живёт внутри контейнера хостинга: корень ФС только для чтения и прав root нет, системные команды вроде apt здесь не сработают."
 
 
 def _download(url: str, target) -> bool:
@@ -177,6 +185,11 @@ def _ensure_sshx() -> tuple:
     found = shutil.which("sshx")
     if found:
         return found, ""
+    cached = bin_dir / "sshx"
+    if cached.is_file():
+        cached.chmod(0o755)
+        log.info("sshx уже в кэше: %s", cached)
+        return str(cached), ""
     arch = sshx_arches.get(platform.machine())
     if not arch:
         return "", f"архитектура {platform.machine()} не поддерживается"
@@ -187,6 +200,11 @@ def _ensure_tmate() -> tuple:
     found = shutil.which("tmate")
     if found:
         return found, ""
+    cached = bin_dir / "tmate"
+    if cached.is_file():
+        cached.chmod(0o755)
+        log.info("tmate уже в кэше: %s", cached)
+        return str(cached), ""
     arch = tmate_arches.get(platform.machine())
     if not arch:
         return "", f"архитектура {platform.machine()} не поддерживается"
@@ -247,13 +265,14 @@ def _sshx_link(binary: str) -> tuple:
                 return "", f"процесс завершился с кодом {process.returncode}: {last_output}"
             time.sleep(0.3)
             continue
-        text = line.strip()
+        text = ansi_pattern.sub("", line).strip()
         if not text:
             continue
         log.info("sshx: %s", text)
         last_output = text[:200]
-        if "https://sshx.io/v1/" in text:
-            return text, ""
+        url = re.search(r"https://sshx\.io/\S+", text)
+        if url:
+            return url.group(0), ""
     if process.poll() is None:
         return "", "ссылки не дождался за 30 секунд — хостинг, вероятно, не пускает к sshx.io (порт 443)"
     return "", f"процесс завершился с кодом {process.returncode}: {last_output}"
