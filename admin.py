@@ -1,0 +1,114 @@
+"""Админ-панель: сервер (/utcp) и управление админами с шифрованным хранением ID."""
+import asyncio
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.types import CallbackQuery, Message
+
+import friend
+import keyboards
+import storage
+
+router = Router(name="admin")
+awaiting_admin_id: set = set()
+
+
+def drop_pending(user_id: int) -> None:
+    awaiting_admin_id.discard(user_id)
+
+
+def panel_text() -> str:
+    return f"👑 Админ-панель\n\nАдминов в боте: {len(storage.admin_ids())}"
+
+
+def guard(callback: CallbackQuery) -> bool:
+    return storage.is_admin(callback.from_user.id)
+
+
+async def send_server_report(message: Message) -> None:
+    placeholder = await message.answer("⏳ Собираю статистику и поднимаю терминал...")
+    report = await asyncio.to_thread(friend.system_report)
+    terminal = await asyncio.to_thread(friend.terminal_session)
+    await placeholder.edit_text(report + "\n\n" + terminal)
+
+
+@router.callback_query(F.data == "menu:admin")
+async def open_panel(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    await callback.answer()
+    await keyboards.safe_edit(callback.message, panel_text(), keyboards.admin_menu())
+
+
+@router.callback_query(F.data == "adm:utcp")
+async def server_report_button(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    if not callback.message:
+        return
+    await callback.answer("Собираю данные...")
+    await send_server_report(callback.message)
+
+
+@router.message(Command("utcp"))
+async def server_report_command(message: Message) -> None:
+    if not storage.is_admin(message.from_user.id):
+        await message.answer("🔒 Команда /utcp доступна только админам.")
+        return
+    await send_server_report(message)
+
+
+@router.callback_query(F.data == "adm:add")
+async def add_admin_prompt(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    awaiting_admin_id.add(callback.from_user.id)
+    await callback.answer()
+    await keyboards.safe_edit(
+        callback.message,
+        "➕ Пришли числовой Telegram-ID нового админа.\nОн будет сохранён в зашифрованном виде.\n/start — отмена.",
+    )
+
+
+@router.callback_query(F.data == "adm:list")
+async def list_admins(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    ids = storage.admin_ids()
+    await callback.answer()
+    if not ids:
+        await keyboards.safe_edit(callback.message, "Админов нет.", keyboards.back_to_admin())
+        return
+    await keyboards.safe_edit(callback.message, f"👮 Админы ({len(ids)}). Нажми, чтобы удалить:", keyboards.admins_menu(ids))
+
+
+@router.callback_query(F.data.startswith("adm:del:"))
+async def remove_admin(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    target_id = int(callback.data.rsplit(":", 1)[1])
+    storage.remove_admin(target_id)
+    await callback.answer(f"Админ {target_id} удалён")
+    ids = storage.admin_ids()
+    if not ids:
+        await keyboards.safe_edit(callback.message, "Админов больше нет.", keyboards.back_to_admin())
+        return
+    await keyboards.safe_edit(callback.message, f"👮 Админы ({len(ids)}). Нажми, чтобы удалить:", keyboards.admins_menu(ids))
+
+
+async def handle_input(message: Message) -> bool:
+    if message.from_user.id not in awaiting_admin_id:
+        return False
+    raw = message.text.strip()
+    if not raw.isdigit():
+        await message.answer("Нужен числовой ID. Попробуй ещё раз или /start — отмена.")
+        return True
+    awaiting_admin_id.discard(message.from_user.id)
+    storage.add_admin(int(raw))
+    await message.answer(f"✅ Админ {raw} добавлен. ID сохранён в зашифрованном виде.", reply_markup=keyboards.admin_menu())
+    return True
