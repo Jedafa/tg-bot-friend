@@ -1,8 +1,9 @@
 """ИИ-агент управления сервером: настройки шифруются, команды выполняются и показываются в чате.
 
 Цикл как у шелл-агентов: ИИ отвечает либо RUN: <команда> (показываем, выполняем,
-возвращаем вывод), либо DONE: <итог>. Рабочая папка — data-каталог, окружение
-описывается в системном промте. Только для админов.
+возвращаем вывод), либо DONE: <итог>. История диалога хранится на юзера, пока
+включён режим ИИ — «продолжай» продолжает с того же места. Рабочая папка —
+data-каталог, окружение описывается в системном промте. Только для админов.
 """
 import asyncio
 import logging
@@ -22,6 +23,7 @@ log = logging.getLogger(__name__)
 router = Router(name="ai")
 active_users: set = set()
 awaiting_setting: dict = {}
+histories: dict = {}
 setting_fields = {"key": "api_key", "model": "model", "url": "url", "prompt": "prompt"}
 setting_titles = {
     "key": "API-ключ одним сообщением",
@@ -29,9 +31,13 @@ setting_titles = {
     "url": "Base URL одним сообщением (например, https://api.openai.com/v1)",
     "prompt": "дополнительный промт одним сообщением (что угодно, многострочно)",
 }
-max_steps = 10
+max_steps = 25
 shell_timeout = 60
 default_base_url = "https://api.openai.com/v1"
+history_entries_limit = 60
+history_chars_limit = 60000
+output_head = 1500
+output_tail = 2500
 
 
 def is_active(user_id: int) -> bool:
@@ -41,6 +47,18 @@ def is_active(user_id: int) -> bool:
 def leave(user_id: int) -> None:
     active_users.discard(user_id)
     awaiting_setting.pop(user_id, None)
+    histories.pop(user_id, None)
+
+
+def cut_output(output: str) -> str:
+    if len(output) <= output_head + output_tail:
+        return output
+    return output[:output_head] + "\n…[кусок вырезан]…\n" + output[-output_tail:]
+
+
+def trim_history(history: list) -> None:
+    while history and (len(history) > history_entries_limit or sum(len(entry["content"]) for entry in history) > history_chars_limit):
+        history.pop(0)
 
 
 def guard(callback: CallbackQuery) -> bool:
@@ -114,34 +132,41 @@ async def run_agent(bot, chat_id: int, task: str) -> None:
         await bot.send_message(chat_id, "Сначала настрой ИИ: 🔑 API-ключ и 🧠 Модель в панели.")
         return
     base_url = values["url"] or default_base_url
-    messages = [
-        {"role": "system", "content": build_system_prompt()},
-        {"role": "user", "content": task},
-    ]
-    log.info("ИИ-агент стартовал для %s: %s", chat_id, task[:100])
+    history = histories.setdefault(chat_id, [])
+    history.append({"role": "user", "content": task})
+    log.info("ИИ-агент стартовал для %s (в истории %s сообщений): %s", chat_id, len(history), task[:100])
     for step in range(max_steps):
+        messages = [{"role": "system", "content": build_system_prompt()}, *history]
         try:
             reply = await chat_completion(base_url, values["api_key"], values["model"], messages)
         except Exception as error:
             log.warning("ИИ недоступен: %s", error)
+            history.pop()
             await bot.send_message(chat_id, f"⚠️ ИИ недоступен: {error}")
             return
         commentary, action, payload = parse_reply(reply)
         if commentary:
             await bot.send_message(chat_id, commentary[:4000])
         if action == "DONE":
-            await bot.send_message(chat_id, "✅ " + (payload or "Готово.")[:4000])
+            history.append({"role": "assistant", "content": reply})
+            trim_history(history)
+            await bot.send_message(chat_id, "✅ " + (payload or "Готово.")[:4000], reply_markup=keyboards.ai_session_menu())
             return
         if action != "RUN":
+            history.pop()
             await bot.send_message(chat_id, "🤔 Ответ не по формату:\n" + reply[:3500])
             return
+        history.append({"role": "assistant", "content": reply})
         await bot.send_message(chat_id, f"⚙️ Шаг {step + 1}, выполняю:\n{payload}")
         ok, output = await asyncio.to_thread(friend.run_shell, payload, shell_timeout)
         log.info("ИИ-команда (%s): %s -> %s", chat_id, payload[:80], "ok" if ok else "fail")
-        tail = output[-3500:] if len(output) > 3500 else output
-        messages.append({"role": "assistant", "content": reply})
-        messages.append({"role": "user", "content": f"Код выхода: {0 if ok else 1}\nВывод:\n{tail or '(пусто)'}"})
-    await bot.send_message(chat_id, f"⛔️ Остановился после {max_steps} команд. Пиши продолжение, если надо.")
+        history.append({"role": "user", "content": f"Код выхода: {0 if ok else 1}\nВывод:\n{cut_output(output) or '(пусто)'}"})
+        trim_history(history)
+    await bot.send_message(
+        chat_id,
+        f"⛔️ Остановился после {max_steps} команд. Пиши «продолжай» — контекст на месте.",
+        reply_markup=keyboards.ai_session_menu(),
+    )
 
 
 @router.callback_query(F.data == "adm:ai")
@@ -167,6 +192,15 @@ async def ask_setting(callback: CallbackQuery) -> None:
     await callback.message.answer(f"Пришли {setting_titles[field]}.\n/start — отмена.")
 
 
+@router.callback_query(F.data == "ai:fresh")
+async def fresh_session(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    histories.pop(callback.from_user.id, None)
+    await callback.answer("История очищена — новая задача с чистого листа")
+
+
 @router.callback_query(F.data == "ai:chat")
 async def start_ai_chat(callback: CallbackQuery) -> None:
     if not guard(callback):
@@ -176,7 +210,9 @@ async def start_ai_chat(callback: CallbackQuery) -> None:
     active_users.add(callback.from_user.id)
     await callback.answer("Режим ИИ включён")
     await callback.message.answer(
-        "💬 Режим ИИ включён. Пиши задачу — покажу команды и выполню их.\n/stop — выйти из режима."
+        "💬 Режим ИИ включён. Пиши задачу — покажу команды и выполню.\n"
+        "Память диалога ведётся, пока включён режим: «продолжай» продолжает с того же места, "
+        "«🆕 Новая задача» сбрасывает контекст.\n/stop — выйти из режима."
     )
 
 

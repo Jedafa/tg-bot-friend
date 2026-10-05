@@ -84,6 +84,15 @@ def ai_menu() -> InlineKeyboardMarkup:
     )
 
 
+def ai_session_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [button("🆕 Новая задача", "ai:fresh")],
+            [button("◀️ В меню ИИ", "adm:ai")],
+        ]
+    )
+
+
 def admins_menu(ids: list) -> InlineKeyboardMarkup:
     rows = [[button(f"🗑 {admin_id}", f"adm:del:{admin_id}")] for admin_id in ids]
     rows.append([button("◀️ Назад", "menu:admin")])
