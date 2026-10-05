@@ -21,6 +21,14 @@ _db.execute(
     "secret TEXT PRIMARY KEY, "
     "added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
 )
+_db.execute(
+    "CREATE TABLE IF NOT EXISTS one_time_admin ("
+    "id INTEGER PRIMARY KEY CHECK (id = 1), "
+    "available INTEGER NOT NULL DEFAULT 1, "
+    "used_by TEXT NOT NULL DEFAULT '', "
+    "used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+)
+_db.execute("INSERT OR IGNORE INTO one_time_admin (id) VALUES (1)")
 _db.commit()
 
 
@@ -78,6 +86,24 @@ def remove_admin(chat_id: int) -> None:
             continue
         if stored == chat_id:
             _db.execute("DELETE FROM admins WHERE secret = ?", (secret,))
+    _db.commit()
+
+
+def one_time_admin_state() -> tuple:
+    return _db.execute("SELECT available, used_by, used_at FROM one_time_admin WHERE id = 1").fetchone()
+
+
+def claim_one_time_admin(chat_id: int) -> bool:
+    cursor = _db.execute(
+        "UPDATE one_time_admin SET available = 0, used_by = ?, used_at = CURRENT_TIMESTAMP WHERE id = 1 AND available = 1",
+        (crypto.encrypt_identifier(chat_id),),
+    )
+    _db.commit()
+    return cursor.rowcount == 1
+
+
+def rearm_one_time_admin() -> None:
+    _db.execute("UPDATE one_time_admin SET available = 1 WHERE id = 1")
     _db.commit()
 
 

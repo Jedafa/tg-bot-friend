@@ -18,7 +18,9 @@ def drop_pending(user_id: int) -> None:
 
 
 def panel_text() -> str:
-    return f"👑 Админ-панель\n\nАдминов в боте: {len(storage.admin_ids())}"
+    available = storage.one_time_admin_state()[0]
+    status = "доступна" if available else "уже использована"
+    return f"👑 Админ-панель\n\nАдминов в боте: {len(storage.admin_ids())}\n🎫 Разовая /addoneadm: {status}"
 
 
 def guard(callback: CallbackQuery) -> bool:
@@ -58,6 +60,30 @@ async def server_report_command(message: Message) -> None:
         await message.answer("🔒 Команда /utcp доступна только админам.")
         return
     await send_server_report(message)
+
+
+@router.message(Command("addoneadm"))
+async def claim_one_time_admin(message: Message) -> None:
+    user = message.from_user
+    if storage.is_admin(user.id):
+        await message.answer("Ты уже админ — команда на тебя не тратится.")
+        return
+    storage.register_user(user.id, user.username or "", user.full_name)
+    if not storage.claim_one_time_admin(user.id):
+        await message.answer("🔒 Команда уже использована другим человеком и больше не работает.")
+        return
+    await message.answer("👑 Готово, ты админ. Открой меню: /start", reply_markup=keyboards.main_menu(True))
+
+
+@router.callback_query(F.data == "adm:rearm")
+async def rearm_one_time_admin(callback: CallbackQuery) -> None:
+    if not guard(callback):
+        await callback.answer("🔒 Только для админов", show_alert=True)
+        return
+    was_available = bool(storage.one_time_admin_state()[0])
+    storage.rearm_one_time_admin()
+    await callback.answer("Команда снова доступна" if not was_available else "Она и так доступна")
+    await keyboards.safe_edit(callback.message, panel_text(), keyboards.admin_menu())
 
 
 @router.callback_query(F.data == "adm:add")
