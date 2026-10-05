@@ -2,7 +2,7 @@
 
 Зависимости: pip install aiogram
 Запуск: BOT_TOKEN=токен_бота ADMIN_ID=твой_telegram_id python main.py
-Без ADMIN_ID владельцем становится первый, кто напишет боту /start.
+ADMIN_ID необязателен: админка выдаётся только через одноразовую /addoneadm.
 """
 import asyncio
 import logging
@@ -32,14 +32,10 @@ async def start(message: Message) -> None:
     storage.register_user(user.id, user.username or "", user.full_name)
     chat.leave(user.id)
     admin.drop_pending(user.id)
-    owner_claimed = False
-    if storage.admin_count() == 0:
-        storage.add_admin(user.id)
-        owner_claimed = True
-    greeting = "👋 Привет! Это tg-bot-friend — курсы крипты, чат между пользователями и серверное хозяйство.\n\n"
-    if owner_claimed:
-        greeting += "👑 Ты открыл бота первым, поэтому стал владельцем.\n\n"
-    await message.answer(greeting + "Выбери раздел:", reply_markup=keyboards.main_menu(storage.is_admin(user.id)))
+    await message.answer(
+        "👋 Привет! Это tg-bot-friend — курсы крипты, чат между пользователями и серверное хозяйство.\n\nВыбери раздел:",
+        reply_markup=keyboards.main_menu(storage.is_admin(user.id)),
+    )
 
 
 @dp.callback_query(F.data == "menu:rates")

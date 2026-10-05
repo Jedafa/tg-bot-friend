@@ -2,6 +2,8 @@
 
 Порядок поднятия терминала: готовый tmate → apt → скрипт get.tmate.io →
 статический бинарник tmate → sshx через sshx.io/get. Результат видит только админ.
+Все скачивания идут в папку данных (на botdepo это /data) — остальная
+файловая система хостинга только для чтения.
 """
 import os
 import platform
@@ -10,12 +12,13 @@ import subprocess
 import tarfile
 import time
 import urllib.request
-from pathlib import Path
+
+import storage
 
 sshx_installer_url = "https://sshx.io/get"
 tmate_installer_url = "https://get.tmate.io/tmate"
 tmate_static_url = "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz"
-bin_dir = Path(__file__).resolve().parent / "bin"
+bin_dir = storage.data_dir / "bin"
 session_name = "botfriend"
 terminal_manual_hint = (
     "Поднять сессию автоматически не удалось. Выполни на сервере вручную:\n"
