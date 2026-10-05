@@ -45,7 +45,7 @@ def all_users() -> list:
 
 
 def user_label(chat_id: int) -> str:
-    row = _db.execute("SELECT username, full_name FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
+    row = _db.execute("SELECT chat_id, username, full_name FROM users WHERE chat_id = ?", (chat_id,)).fetchone()
     name = row_label(row) if row else "неизвестный"
     return f"{name} · ID {chat_id}"
 
