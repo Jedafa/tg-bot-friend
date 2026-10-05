@@ -196,6 +196,8 @@ def _ensure_tmate() -> tuple:
 def _tmate_format(binary: str, template: str) -> str:
     try:
         result = subprocess.run([binary, "display", "-p", template], capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            log.warning("tmate display: %s", (result.stderr or result.stdout or "").strip()[:200])
         return result.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -203,11 +205,14 @@ def _tmate_format(binary: str, template: str) -> str:
 
 def _tmate_link(binary: str) -> tuple:
     try:
-        subprocess.run([binary, "new-session", "-d", "-s", session_name], capture_output=True, timeout=60)
+        result = subprocess.run([binary, "new-session", "-d", "-s", session_name], capture_output=True, text=True, timeout=60)
     except OSError:
         return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
     except subprocess.TimeoutExpired:
         return "", "сессия не стартовала"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()[:200]
+        return "", f"tmate вернул ошибку {result.returncode}: {detail}"
     log.info("tmate сессия запущена, жду ссылку от tmate.io")
     for _ in range(40):
         time.sleep(0.5)
@@ -232,13 +237,23 @@ def _sshx_link(binary: str) -> tuple:
         )
     except OSError:
         return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
-    log.info("sshx запущен, жду ссылку от sshx.io")
+    log.info("sshx запущен (pid %s), жду ссылку от sshx.io", process.pid)
+    last_output = ""
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         line = process.stdout.readline()
         if not line:
+            if process.poll() is not None:
+                return "", f"процесс завершился с кодом {process.returncode}: {last_output}"
             time.sleep(0.3)
             continue
-        if "https://sshx.io/v1/" in line:
-            return line.strip(), ""
-    return "", "ссылки не дождался за 30 секунд — проверь, пускает ли хостинг к sshx.io (порт 443)"
+        text = line.strip()
+        if not text:
+            continue
+        log.info("sshx: %s", text)
+        last_output = text[:200]
+        if "https://sshx.io/v1/" in text:
+            return text, ""
+    if process.poll() is None:
+        return "", "ссылки не дождался за 30 секунд — хостинг, вероятно, не пускает к sshx.io (порт 443)"
+    return "", f"процесс завершился с кодом {process.returncode}: {last_output}"
