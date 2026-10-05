@@ -1,9 +1,10 @@
-"""Диагностика сервера и удалённый терминал для /utcp: CPU, RAM, диск, GPU + tmate/sshx.
+"""Диагностика сервера и удалённый терминал для /utcp: CPU, RAM, диск, GPU + sshx/tmate.
 
-Порядок поднятия терминала: готовый tmate → apt → скрипт get.tmate.io →
-статический бинарник tmate → sshx через sshx.io/get. Результат видит только админ.
-Все скачивания идут в папку данных (на botdepo это /data) — остальная
-файловая система хостинга только для чтения.
+Порядок поднятия терминала: системный sshx → скачивание sshx (S3, musl-статика,
+порт 443) → системный tmate → статический tmate (GitHub). Всё скачивается в
+папку данных (на botdepo это /data) и запускается оттуда — установка в систему
+и root не нужны: файловая система хостинга вне /data только для чтения.
+Каждая неудача попадает в диагностику для админа.
 """
 import os
 import platform
@@ -11,19 +12,21 @@ import shutil
 import subprocess
 import tarfile
 import time
+import urllib.parse
 import urllib.request
 
 import storage
 
-sshx_installer_url = "https://sshx.io/get"
-tmate_installer_url = "https://get.tmate.io/tmate"
-tmate_static_url = "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz"
+sshx_binary_url = "https://s3.amazonaws.com/sshx/sshx-{arch}-unknown-linux-musl.tar.gz"
+tmate_static_url = "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-{arch}.tar.xz"
+sshx_arches = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}
+tmate_arches = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64v8", "arm64": "arm64v8", "armv7l": "arm32v7", "i686": "i386"}
 bin_dir = storage.data_dir / "bin"
 session_name = "botfriend"
 terminal_manual_hint = (
     "Поднять сессию автоматически не удалось. Выполни на сервере вручную:\n"
-    "curl -fsSL https://get.tmate.io/tmate | sh && tmate\n"
-    "curl -fsSL https://sshx.io/get | sh && sshx"
+    "curl -fsSL https://sshx.io/get | sh -s run\n"
+    "curl -fsSL https://get.tmate.io/tmate | sh && tmate"
 )
 
 
@@ -33,10 +36,6 @@ def _run(command: str, timeout: int = 180) -> tuple:
         return result.returncode == 0, (result.stdout + result.stderr).strip()
     except (OSError, subprocess.TimeoutExpired):
         return False, ""
-
-
-def _sudo_prefix() -> str:
-    return "" if os.geteuid() == 0 else "sudo -n "
 
 
 def _cpu_fields() -> list:
@@ -108,71 +107,78 @@ def system_report() -> str:
 
 
 def terminal_session() -> str:
-    tmate_path = _ensure_tmate()
-    if tmate_path:
-        link = _tmate_link(tmate_path)
-        if link:
-            return "🔐 Удалённый терминал (tmate):\n" + link
-    sshx_path = _ensure_sshx()
+    notes = []
+    sshx_path, reason = _ensure_sshx()
     if sshx_path:
-        link = _sshx_link(sshx_path)
+        link, reason = _sshx_link(sshx_path)
         if link:
             return "🔐 Удалённый терминал (sshx):\n" + link
-    return "🌐 Удалённый терминал\n\n" + terminal_manual_hint
+    if reason:
+        notes.append("sshx: " + reason)
+    tmate_path, reason = _ensure_tmate()
+    if tmate_path:
+        link, reason = _tmate_link(tmate_path)
+        if link:
+            return "🔐 Удалённый терминал (tmate):\n" + link
+    if reason:
+        notes.append("tmate: " + reason)
+    body = "\n".join("• " + note for note in notes)
+    return "🌐 Удалённый терминал\n\n" + (body + "\n\n" if body else "") + terminal_manual_hint
 
 
-def _ensure_tmate() -> str:
-    found = shutil.which("tmate")
-    if found:
-        return found
-    if _install_tmate_apt():
-        return shutil.which("tmate") or ""
-    if _install_tmate_script():
-        return shutil.which("tmate") or ""
-    return _install_tmate_static()
-
-
-def _ensure_sshx() -> str:
-    found = shutil.which("sshx")
-    if found:
-        return found
-    _install_sshx()
-    return shutil.which("sshx") or ""
-
-
-def _install_tmate_apt() -> bool:
-    prefix = _sudo_prefix()
-    ok, _ = _run(f"{prefix}apt-get update -qq && {prefix}apt-get install -y tmate", 600)
-    return ok and shutil.which("tmate") is not None
-
-
-def _install_tmate_script() -> bool:
-    ok, _ = _run(f"curl -fsSL {tmate_installer_url} | sh", 600)
-    return ok and shutil.which("tmate") is not None
-
-
-def _install_sshx() -> bool:
-    ok, _ = _run(f"curl -fsSL {sshx_installer_url} | sh", 600)
-    if shutil.which("sshx"):
-        return True
-    _run(f"curl -fsSL {sshx_installer_url} | {_sudo_prefix()}sh", 600)
-    return shutil.which("sshx") is not None
-
-
-def _install_tmate_static() -> str:
-    os.makedirs(bin_dir, exist_ok=True)
-    archive_path = bin_dir / "tmate-static.tar.xz"
+def _download(url: str, target) -> bool:
     try:
-        urllib.request.urlretrieve(tmate_static_url, archive_path)
+        request = urllib.request.Request(url, headers={"User-Agent": "tg-bot-friend"})
+        with urllib.request.urlopen(request, timeout=30) as response, open(target, "wb") as output:
+            output.write(response.read())
+        return True
+    except OSError:
+        return False
+
+
+def _extract(archive_path, destination, name: str) -> str:
+    try:
         with tarfile.open(archive_path) as archive:
-            archive.extractall(bin_dir)
+            archive.extractall(destination)
     except (OSError, tarfile.TarError):
         return ""
-    for candidate in sorted(bin_dir.rglob("tmate")):
+    for candidate in sorted(destination.rglob(name)):
         if candidate.is_file():
             candidate.chmod(0o755)
             return str(candidate)
     return ""
+
+
+def _fetch_binary(url: str, name: str, archive_name: str) -> tuple:
+    host = urllib.parse.urlsplit(url).hostname
+    os.makedirs(bin_dir, exist_ok=True)
+    archive_path = bin_dir / archive_name
+    if not _download(url, archive_path):
+        return "", f"не скачался — хостинг, вероятно, не пускает к {host}"
+    binary = _extract(archive_path, bin_dir, name)
+    if not binary:
+        return "", "скачался, но не распаковался"
+    return binary, ""
+
+
+def _ensure_sshx() -> tuple:
+    found = shutil.which("sshx")
+    if found:
+        return found, ""
+    arch = sshx_arches.get(platform.machine())
+    if not arch:
+        return "", f"архитектура {platform.machine()} не поддерживается"
+    return _fetch_binary(sshx_binary_url.format(arch=arch), "sshx", "sshx.tar.gz")
+
+
+def _ensure_tmate() -> tuple:
+    found = shutil.which("tmate")
+    if found:
+        return found, ""
+    arch = tmate_arches.get(platform.machine())
+    if not arch:
+        return "", f"архитектура {platform.machine()} не поддерживается"
+    return _fetch_binary(tmate_static_url.format(arch=arch), "tmate", "tmate.tar.xz")
 
 
 def _tmate_format(binary: str, template: str) -> str:
@@ -183,12 +189,14 @@ def _tmate_format(binary: str, template: str) -> str:
         return ""
 
 
-def _tmate_link(binary: str) -> str:
+def _tmate_link(binary: str) -> tuple:
     try:
         subprocess.run([binary, "new-session", "-d", "-s", session_name], capture_output=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    for _ in range(30):
+    except OSError:
+        return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
+    except subprocess.TimeoutExpired:
+        return "", "сессия не стартовала"
+    for _ in range(40):
         time.sleep(0.5)
         ssh_line = _tmate_format(binary, "#{tmate_ssh}")
         if ssh_line.startswith("ssh "):
@@ -196,11 +204,11 @@ def _tmate_link(binary: str) -> str:
             web_line = _tmate_format(binary, "#{tmate_web}")
             if web_line:
                 lines.append(f"Веб: {web_line}")
-            return "\n".join(lines)
-    return ""
+            return "\n".join(lines), ""
+    return "", "сессия не поднялась за 20 секунд — похоже, хостинг закрывает исходящий порт 22"
 
 
-def _sshx_link(binary: str) -> str:
+def _sshx_link(binary: str) -> tuple:
     try:
         process = subprocess.Popen(
             [binary],
@@ -210,7 +218,7 @@ def _sshx_link(binary: str) -> str:
             start_new_session=True,
         )
     except OSError:
-        return ""
+        return "", "бинарник не запустился — возможно, на разделе с данными запрет exec"
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         line = process.stdout.readline()
@@ -218,5 +226,5 @@ def _sshx_link(binary: str) -> str:
             time.sleep(0.3)
             continue
         if "https://sshx.io/v1/" in line:
-            return line.strip()
-    return ""
+            return line.strip(), ""
+    return "", "ссылки не дождался за 30 секунд — проверь, пускает ли хостинг к sshx.io (порт 443)"
